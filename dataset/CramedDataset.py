@@ -11,6 +11,9 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 import pdb
 
+import PIL
+import torchaudio
+
 class CramedDataset(Dataset):
 
     def __init__(self, args, mode='train'):
@@ -53,25 +56,41 @@ class CramedDataset(Dataset):
 
     def __getitem__(self, idx):
         # audio
-        audio_filename = self.audio[idx]
-        spectrogram_path = os.path.dirname(audio_filename) + "-Spectrogram"
-        audio_name = os.path.basename(audio_filename).split('.')[0]
-        spectrogram_file = os.path.join(spectrogram_path, audio_name + '_spectrogram.npy')
+        # audio_filename = self.audio[idx]
+        # spectrogram_path = os.path.dirname(audio_filename) + "-Spectrogram"
+        # audio_name = os.path.basename(audio_filename).split('.')[0]
+        # spectrogram_file = os.path.join(spectrogram_path, audio_name + '_spectrogram.npy')
+        #
+        # if os.path.exists(spectrogram_file):
+        #     spectrogram = np.load(spectrogram_file)
+        # else:
+        #     samples, rate = librosa.load(audio_filename, sr=22050)
+        #     resamples = np.tile(samples, 3)[:22050*3]
+        #     resamples[resamples > 1.] = 1.
+        #     resamples[resamples < -1.] = -1.
+        #
+        #     spectrogram = librosa.stft(resamples, n_fft=512, hop_length=353)
+        #     spectrogram = np.log(np.abs(spectrogram) + 1e-7)
+        #
+        #     # Save the spectrogram for later use
+        #     np.save(spectrogram_file, spectrogram)
 
-        if os.path.exists(spectrogram_file):
-            spectrogram = np.load(spectrogram_file)
-        else:
-            samples, rate = librosa.load(audio_filename, sr=22050)
-            resamples = np.tile(samples, 3)[:22050*3]
-            resamples[resamples > 1.] = 1.
-            resamples[resamples < -1.] = -1.
+        audio_file_path = self.audio[idx]
 
-            spectrogram = librosa.stft(resamples, n_fft=512, hop_length=353)
-            spectrogram = np.log(np.abs(spectrogram) + 1e-7)
+        waveform, sample_rate = torchaudio.load(audio_file_path, normalize=True)
+        waveform = torchaudio.functional.resample(waveform, orig_freq=sample_rate, new_freq=22050)
+        waveform = torch.clamp(waveform, -1, 1)
 
-            # Save the spectrogram for later use
-            np.save(spectrogram_file, spectrogram)
+        stft_transforms = torchaudio.transforms.Spectrogram(n_fft=512, hop_length=353, power=None, pad_mode='constant')
+        spectrogram = stft_transforms(waveform)
+        spectrogram = torch.log(torch.abs(spectrogram) + 1e-7)
 
+        spectrogram = PIL.Image.fromarray(spectrogram.squeeze().numpy())  # (249, 257)
+
+        spectrogram = transforms.Compose([
+            transforms.Resize((224, 224)),  # 将频谱图像调整到224x224
+            transforms.ToTensor(),
+        ])(spectrogram)
 
         if self.mode == 'train':
             transform = transforms.Compose([

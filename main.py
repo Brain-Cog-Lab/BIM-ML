@@ -14,6 +14,8 @@ from dataset.VGGSoundDataset import VGGSound
 from dataset.dataset import AVDataset
 from models.basic_model import AVClassifier
 from utils.utils import setup_seed, weight_init
+
+from tqdm import tqdm
 import math
 
 def get_arguments():
@@ -171,7 +173,7 @@ def train_epoch(args, epoch, model, device, dataloader, optimizer, scheduler):
     _loss_v = 0
 
 
-    for step, (spec, image, label) in enumerate(dataloader):
+    for step, (spec, image, label) in tqdm(enumerate(dataloader), total=len(dataloader)):
 
         #pdb.set_trace()
         spec = spec.to(device)
@@ -185,27 +187,21 @@ def train_epoch(args, epoch, model, device, dataloader, optimizer, scheduler):
         optimizer.zero_grad()
 
         # TODO: make it simpler and easier to extend
-        if args.meta_ratio >= 0.0:
-            if args.modulation == 'OGM_GE':
-                output_a, output_v, disc_pred_a, disc_pred_v, out = model(spec.unsqueeze(1).float(), image.float())
-            else:
-                disc_pred_a, disc_pred_v, out = model(spec.unsqueeze(1).float(), image.float())
+        if args.fusion_method == 'metamodal':
+            output_a, output_v, disc_pred_a, disc_pred_v, out = model(spec.float(), image.float())
         else:
-            if args.modulation == 'OGM_GE' and args.fusion_method == 'metamodal':
-                output_a, output_v, disc_pred_a, disc_pred_v, out = model(spec.unsqueeze(1).float(), image.float())
-            else:
-                a, v, out = model(spec.unsqueeze(1).float(), image.float())
-                a = a.detach()
-                v = v.detach()
-                weight_size = model.module.fusion_module.fc_out.weight.size(1)
-                output_v = (torch.mm(v, torch.transpose(model.module.fusion_module.fc_out.weight[:, weight_size // 2:], 0, 1))
-                         + model.module.fusion_module.fc_out.bias / 2)
+            a, v, out = model(spec.float(), image.float())
+            a = a.detach()
+            v = v.detach()
+            weight_size = model.module.fusion_module.fc_out.weight.size(1)
+            output_v = (torch.mm(v, torch.transpose(model.module.fusion_module.fc_out.weight[:, weight_size // 2:], 0, 1))
+                     + model.module.fusion_module.fc_out.bias / 2)
 
-                output_a = (torch.mm(a, torch.transpose(model.module.fusion_module.fc_out.weight[:, :weight_size // 2], 0, 1))
-                         + model.module.fusion_module.fc_out.bias / 2)
+            output_a = (torch.mm(a, torch.transpose(model.module.fusion_module.fc_out.weight[:, :weight_size // 2], 0, 1))
+                     + model.module.fusion_module.fc_out.bias / 2)
 
 
-        inverse_loss = compute_inverse_loss(softmax(output_a), softmax(output_v), softmax(out), label, criterion, args.rho)
+        # inverse_loss = compute_inverse_loss(softmax(output_a), softmax(output_v), softmax(out), label, criterion, args.rho)
 
         cls_loss = criterion(out, label)
 
@@ -218,69 +214,66 @@ def train_epoch(args, epoch, model, device, dataloader, optimizer, scheduler):
             loss_a = criterion(output_a, label)
             loss = cls_loss
 
-        if epoch > args.inverse_epoch:  # 大于设定的才启用
-            loss = loss + inverse_loss
+        # if epoch > args.inverse_epoch:  # 大于设定的才启用
+        #     loss = loss + inverse_loss
         loss.backward()
 
-        if args.modulation == 'Normal':
-            # no modulation, regular optimization
-            pass
+
+        # Modulation starts here !
+        score_v = sum([softmax(output_v)[i][label[i]] for i in range(output_v.size(0))])
+        score_a = sum([softmax(output_a)[i][label[i]] for i in range(output_a.size(0))])
+        score_av = sum([softmax(out)[i][label[i]] for i in range(out.size(0))])
+
+        ratio_v = score_v / score_a
+        ratio_a = 1 / ratio_v
+        ratio_av = (score_a + score_v) / score_av
+
+        """
+        Below is the Eq.(10) in our CVPR paper:
+                1 - tanh(alpha * rho_t_u), if rho_t_u > 1
+        k_t_u =
+                1,                         else
+        coeff_u is k_t_u, where t means iteration steps and u is modality indicator, either a or v.
+        """
+
+        if ratio_v > 1:
+            coeff_v = 1 - tanh(args.alpha * relu(ratio_v))
+            coeff_a = 1
         else:
-            # Modulation starts here !
-            score_v = sum([softmax(output_v)[i][label[i]] for i in range(output_v.size(0))])
-            score_a = sum([softmax(output_a)[i][label[i]] for i in range(output_a.size(0))])
-            score_av = sum([softmax(out)[i][label[i]] for i in range(out.size(0))])
+            coeff_a = 1 - tanh(args.alpha * relu(ratio_a))
+            coeff_v = 1
+        coeff_av = 1 + tanh(torch.tensor(1.0)) - tanh(relu(ratio_av))  # a 和 v 越弱, av出来越强
 
-            ratio_v = score_v / score_a
-            ratio_a = 1 / ratio_v
-            ratio_av = (score_a + score_v) / score_av
+        if args.use_tensorboard:
+            iteration = epoch * len(dataloader) + step
 
-            """
-            Below is the Eq.(10) in our CVPR paper:
-                    1 - tanh(alpha * rho_t_u), if rho_t_u > 1
-            k_t_u =
-                    1,                         else
-            coeff_u is k_t_u, where t means iteration steps and u is modality indicator, either a or v.
-            """
+            writer.add_scalars('score', {'a': score_a,
+                                         'v': score_v,
+                                         'av': score_av}, iteration)
 
-            if ratio_v > 1:
-                coeff_v = 1 - tanh(args.alpha * relu(ratio_v))
-                coeff_a = 1
-            else:
-                coeff_a = 1 - tanh(args.alpha * relu(ratio_a))
-                coeff_v = 1
-            coeff_av = 1 + tanh(torch.tensor(1.0)) - tanh(relu(ratio_av))  # a 和 v 越弱, av出来越强
+            writer.add_scalars('Coefficient', {'a': coeff_a,
+                                               'v': coeff_v,
+                                               'av': coeff_av}, iteration)
 
-            if args.use_tensorboard:
-                iteration = epoch * len(dataloader) + step
+        if args.modulation_starts <= epoch <= args.modulation_ends: # bug fixed
+            for name, parms in model.named_parameters():
+                layer = str(name).split('.')[1]  # 因为是并行的所以有一个moudle前缀. 因此序列索引为1.
 
-                writer.add_scalars('score', {'a': score_a,
-                                             'v': score_v,
-                                             'av': score_av}, iteration)
+                if 'audio' in layer and len(parms.grad.size()) == 4:
+                    if args.modulation == 'OGM_GE':  # bug fixed
+                        parms.grad = parms.grad * coeff_a + \
+                                     torch.zeros_like(parms.grad).normal_(0, parms.grad.std().item() + 1e-8)
 
-                writer.add_scalars('Coefficient', {'a': coeff_a,
-                                                   'v': coeff_v,
-                                                   'av': coeff_av}, iteration)
+                if 'visual' in layer and len(parms.grad.size()) == 4:
+                    if args.modulation == 'OGM_GE':  # bug fixed
+                        parms.grad = parms.grad * coeff_v + \
+                                     torch.zeros_like(parms.grad).normal_(0, parms.grad.std().item() + 1e-8)
 
-            if args.modulation_starts <= epoch <= args.modulation_ends: # bug fixed
-                for name, parms in model.named_parameters():
-                    layer = str(name).split('.')[1]  # 因为是并行的所以有一个moudle前缀. 因此序列索引为1.
-
-                    if 'audio' in layer and len(parms.grad.size()) == 4:
-                        if args.modulation == 'OGM_GE':  # bug fixed
-                            parms.grad = parms.grad * coeff_a + \
-                                         torch.zeros_like(parms.grad).normal_(0, parms.grad.std().item() + 1e-8)
-
-                    if 'visual' in layer and len(parms.grad.size()) == 4:
-                        if args.modulation == 'OGM_GE':  # bug fixed
-                            parms.grad = parms.grad * coeff_v + \
-                                         torch.zeros_like(parms.grad).normal_(0, parms.grad.std().item() + 1e-8)
-
-                    if 'fusion' in layer:
-                        if args.inverse is True:
-                            parms.grad *= coeff_av
-            else:
-                pass
+                if 'fusion' in layer:
+                    if args.inverse is True:
+                        parms.grad = parms.grad * coeff_av
+        else:
+            pass
 
 
         optimizer.step()
@@ -365,10 +358,10 @@ def valid(args, model, device, dataloader):
             image = image.to(device)
             label = label.to(device)
 
-            if args.fusion_method == 'ogmge_metamodal':
-                out_a, out_v, _, _, out = model(spec.unsqueeze(1).float(), image.float())
+            if args.fusion_method == 'metamodal':
+                out_a, out_v, _, _, out = model(spec.float(), image.float())
             else:
-                out_a, out_v, out = model(spec.unsqueeze(1).float(), image.float())
+                out_a, out_v, out = model(spec.float(), image.float())
 
             if args.fusion_method == 'concat':
                 out_v = (torch.mm(out_v, torch.transpose(model.module.fusion_module.fc_out.weight[:, 512:], 0, 1)) +
@@ -412,7 +405,9 @@ def valid(args, model, device, dataloader):
 
 
 def main():
-
+    torch.set_num_threads(16)
+    os.environ["OMP_NUM_THREADS"] = "16"  # 设置OpenMP计算库的线程数
+    os.environ["MKL_NUM_THREADS"] = "16"  # 设置MKL-DNN CPU加速库的线程数。
     setup_seed(args.seed)
     gpu_ids = list(range(torch.cuda.device_count()))
 
@@ -450,10 +445,10 @@ def main():
                                   'Only support VGGSound, KineticSound and CREMA-D for now!'.format(args.dataset))
 
     train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size,
-                                  shuffle=True, num_workers=8, pin_memory=True)
+                                  shuffle=True, num_workers=32, pin_memory=True)
 
     test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size,
-                                 shuffle=False, num_workers=8, pin_memory=True)
+                                 shuffle=False, num_workers=32, pin_memory=True)
 
     if args.train:
 
