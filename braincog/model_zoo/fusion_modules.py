@@ -47,6 +47,16 @@ class GradientReversalFunction(torch.autograd.Function):
         return output, None
 
 
+class GradientFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, alpha):
+        ctx.alpha = alpha
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        output = grad_output * ctx.alpha
+        return output, None
 
 class Attention(nn.Module):
     def __init__(self, input_dim=512):
@@ -158,10 +168,9 @@ class MixtureOfExperts(nn.Module):
 class MetamodalFusion(nn.Module):
     def __init__(self, input_dim=512, output_dim=100):
         super(MetamodalFusion, self).__init__()
-        # self.fc_meta_a = MixtureOfExperts(input_dim=input_dim, output_dim=input_dim, num_experts=4)
-        # self.fc_meta_v = MixtureOfExperts(input_dim=input_dim, output_dim=input_dim, num_experts=4)
+        self.singlemodal_a_expert = nn.Linear(input_dim, output_dim)
+        self.singlemodal_v_expert = nn.Linear(input_dim, output_dim)
         self.fc_out = nn.Linear(2 * input_dim, output_dim)
-        self.discriminator_fc = nn.Linear(input_dim, 2)
     def forward(self, a, v, alpha):
         """
         a.shape [B, N, C]
@@ -170,13 +179,13 @@ class MetamodalFusion(nn.Module):
         # output_a = self.fc_meta_a(a, v)
         # output_v = self.fc_meta_v(v, a)
         output_a, output_v = torch.mean(a, dim=1), torch.mean(v, dim=1)
-        output_a_reversed = GradientReversalFunction.apply(output_a, alpha)
-        output_v_reversed = GradientReversalFunction.apply(output_v, alpha)
-        disc_pred_a = self.discriminator_fc(output_a_reversed)
-        disc_pred_v = self.discriminator_fc(output_v_reversed)
+        singlemodal_a_output = self.singlemodal_a_expert(output_a)
+        singlemodal_a_output = GradientFunction.apply(singlemodal_a_output, alpha)
+        singlemodal_v_output = self.singlemodal_v_expert(output_v)
+        singlemodal_v_output = GradientFunction.apply(singlemodal_v_output, alpha)
         output = torch.cat((output_a, output_v), dim=1)
         output = self.fc_out(output)
-        return output_a, output_v, disc_pred_a, disc_pred_v, output
+        return singlemodal_a_output, singlemodal_v_output, output_a, output_v, output
 
 
 class OGMGE_MetamodalFusion(nn.Module):
@@ -204,16 +213,6 @@ class OGMGE_MetamodalFusion(nn.Module):
         output_v = self.fc_out(torch.cat((torch.zeros_like(output_v), output_v), dim=1)).detach()
         return output_a, output_v, disc_pred_a, disc_pred_v, output
 
-
-
-# 判别器模型
-class Discriminator(nn.Module):
-    def __init__(self, input_dim=2048):
-        super(Discriminator, self).__init__()
-        self.fc = nn.Linear(input_dim, 1)
-
-    def forward(self, x):
-        return torch.sigmoid(self.fc(x))
 
 class FiLM(nn.Module):
     """
