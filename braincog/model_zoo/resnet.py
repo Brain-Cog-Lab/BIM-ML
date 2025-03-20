@@ -294,7 +294,7 @@ class ResNet(BaseModule):
                                    padding=1,
                                    bias=False)
             self.static_data = True
-        elif self.dataset == "CREMAD":
+        elif self.dataset == "CREMAD" or self.dataset == "KineticSound":
             if self.modality == "audio":
                 self.conv1 = nn.Conv2d(1 * self.init_channel_mul,
                                        self.inplanes,
@@ -309,6 +309,10 @@ class ResNet(BaseModule):
                                        stride=2,
                                        padding=3,
                                        bias=False)
+
+        self.bn1 = norm_layer(self.inplanes)
+        self.node1 = self.node()
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
         # self.relu = nn.ReLU(inplace=False)
         self.layer1 = self._make_layer(
@@ -329,7 +333,6 @@ class ResNet(BaseModule):
                                        stride=2,
                                        dilate=replace_stride_with_dilation[2], node=self.node)
 
-        self.bn1 = norm_layer(self.inplanes)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
 
         if self.spike_output:
@@ -438,21 +441,14 @@ class ResNet(BaseModule):
                 x = inputs[t]
 
                 x = self.conv1(x)
+                x = self.bn1(x)
+                x = self.node1(x)
+                x = self.maxpool(x)
 
                 x = self.layer1(x)
                 x = self.layer2(x)
                 x = self.layer3(x)
                 x = self.layer4(x)
-
-                # x = self.bn1(x)
-                # # x = self.node1(x)
-                # x = self.avgpool(x)
-                #
-                # x = torch.flatten(x, 1)
-                # x = self.fc(x)
-                #
-                # x = self.node2(x)
-                # x = self.vote(x)
 
                 outputs.append(x)
 

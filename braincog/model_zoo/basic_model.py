@@ -47,6 +47,11 @@ class AVClassifier(BaseModule):
         """
         audio, visual = input
 
+        if len(visual.size()) == 6:
+            (B, T, C, N, H, W) = visual.size()
+            visual = visual.permute(0, 3, 1, 2, 4, 5).contiguous()
+            visual = visual.view(B * N, T, C, H, W)
+
         audio, visual = self.encoder(audio), self.encoder(visual)
         self.reset()
 
@@ -62,7 +67,7 @@ class AVClassifier(BaseModule):
             (_, C, H, W) = v.size()
             B = a.size()[0]
             v = v.view(B, -1, C, H, W)
-            v = v.permute(0, 2, 1, 3, 4)
+            v = torch.mean(v, dim=1)
 
             if "metamodal" in self.fusion:
                 a = a.view(B, -1, C)
@@ -71,7 +76,7 @@ class AVClassifier(BaseModule):
                 output_a_list.append(output_a), output_v_list.append(output_v), disc_pred_a_list.append(disc_pred_a), disc_pred_v_list.append(disc_pred_v), out_list.append(out)
             else:
                 a = F.adaptive_avg_pool2d(a, 1)
-                v = F.adaptive_avg_pool3d(v, 1)
+                v = F.adaptive_avg_pool2d(v, 1)
 
                 a = torch.flatten(a, 1)
                 v = torch.flatten(v, 1)

@@ -16,6 +16,8 @@ import torchaudio
 import librosa
 import numpy as np
 import torchvision
+import csv
+import copy
 
 from torchvision import transforms
 from typing import Any, Dict, Optional, Sequence, Tuple, Union
@@ -33,9 +35,9 @@ from braincog.datasets.StanfordDogs import StanfordDogs
 from braincog.datasets.bullying10k import BULLYINGDVS
 from braincog.datasets.time_conut import TimeCounter
 
-from .cut_mix import CutMix, EventMix, MixUp
-from .rand_aug import *
-from .utils import dvs_channel_check_expend, rescale
+from braincog.datasets.cut_mix import CutMix, EventMix, MixUp
+from braincog.datasets.rand_aug import *
+from braincog.datasets.utils import dvs_channel_check_expend, rescale
 
 from torch.utils.data import ConcatDataset, Subset
 from collections import defaultdict
@@ -859,6 +861,7 @@ class CREMADDataset(torch.utils.data.Dataset):
 
         waveform, sample_rate = torchaudio.load(audio_file_path, normalize=True)
         waveform = torchaudio.functional.resample(waveform, orig_freq=sample_rate, new_freq=22050)
+        waveform = waveform.repeat(1, 3)[:, :22050 * 3]
         waveform = torch.clamp(waveform, -1, 1)
 
         stft_transforms = torchaudio.transforms.Spectrogram(n_fft=512, hop_length=353, power=None, pad_mode='constant')
@@ -903,19 +906,18 @@ def get_CREMAD_data(batch_size, num_workers=8, same_da=False,root=DATA_DIR, **kw
 
 
     visual_test_transform = transforms.Compose([
-        transforms.Resize(256),
-        transforms.CenterCrop(size),
+        transforms.Resize((size, size)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
     audio_train_transform = transforms.Compose([
-        transforms.Resize((size, size)),  # 将频谱图像调整到224x224
+        # transforms.Resize((size, size)),  # 将频谱图像调整到224x224; 为了能够使用collate_fn
         transforms.ToTensor(),
     ])
 
     audio_test_transform = transforms.Compose([
-        transforms.Resize((size, size)),  # 将频谱图像调整到224x224
+        # transforms.Resize((size, size)),  # 将频谱图像调整到224x224
         transforms.ToTensor(),
     ])
 
@@ -943,29 +945,196 @@ def get_CREMAD_data(batch_size, num_workers=8, same_da=False,root=DATA_DIR, **kw
         cnt_now_test += class_counts_test[i]
 
 
-    train_dataset = DiskCachedDataset(train_dataset,
-                                      cache_path=os.path.join(DATA_DIR, 'CREMA-D/{}/train_cache_{}'.format(modality, args.step)),
-                                      transform=None, num_copies=3)
-
-    test_dataset = DiskCachedDataset(test_dataset,
-                                      cache_path=os.path.join(DATA_DIR, 'CREMA-D/{}/test_cache_{}'.format(modality, args.step)),
-                                      transform=None, num_copies=3)
+    # train_dataset = DiskCachedDataset(train_dataset,
+    #                                   cache_path=os.path.join(DATA_DIR, 'CREMA-D/{}/train_cache_{}'.format(modality, args.step)),
+    #                                   transform=None, num_copies=3)
+    #
+    # test_dataset = DiskCachedDataset(test_dataset,
+    #                                   cache_path=os.path.join(DATA_DIR, 'CREMA-D/{}/test_cache_{}'.format(modality, args.step)),
+    #                                   transform=None, num_copies=3)
 
     # 使用SubsetRandomSampler来创建训练和测试的DataLoader
     train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=batch_size,
-        sampler=torch.utils.data.sampler.SubsetRandomSampler(indices_train),
+        train_dataset, batch_size=batch_size, shuffle=True,
         pin_memory=True, drop_last=True, num_workers=32
     )
 
     test_loader = torch.utils.data.DataLoader(
-        test_dataset, batch_size=batch_size,
-        sampler=torch.utils.data.sampler.SubsetRandomSampler(indices_test),
+        test_dataset, batch_size=batch_size, shuffle=False,
         pin_memory=True, drop_last=False, num_workers=32
     )
 
     return train_loader, test_loader, None, None
 
+
+
+class KineticSoundDataset(torch.utils.data.Dataset):
+    def __init__(self, file_path, class_names, modality, train, visual_transform=None, audio_transform=None):
+        """
+        Args:
+            file_path (str): 数据集根目录路径
+            class_names (list): 类别名称列表
+            transform (callable, optional): 变换操作（如数据增强）
+        """
+        self.visual_transform = visual_transform
+        self.audio_transform = audio_transform
+        self.modality = modality
+
+        if train:
+            self.mode = "train"
+        else:
+            self.mode = "test"
+        classes = []
+        self.av_files = []
+        self.name2class = {}
+        self.class2name = {}
+
+        # 数据根路径
+        self.data_root = file_path
+
+        # 训练和测试数据集路径
+        self.video_feature_path = os.path.join(self.data_root, self.mode, 'video/')
+        self.audio_feature_path = os.path.join(self.data_root, self.mode, 'audio/')
+        self.train_txt = os.path.join(self.data_root, 'my_train.txt')
+        self.test_txt = os.path.join(self.data_root, 'my_test.txt')
+
+        # 选择相应的 CSV 文件
+        csv_file = self.train_txt if self.mode == 'train' else self.test_txt
+
+        # 读取类别信息
+        self.class2name = {v: k for k, v in class_names.items()}
+        with open(csv_file) as f2:
+            csv_reader = csv.reader(f2)
+            for item in csv_reader:
+                vid_start_end = item[0]  # 视频音频标识符
+                if self.mode == "test":
+                    vid_start_end = vid_start_end[:11]
+                label_id = int(item[2])  # 类别名称
+
+                # 构造完整的音频和视频路径
+                audio_path = os.path.join(self.audio_feature_path, self.class2name.get(label_id), vid_start_end + '.wav')
+                visual_path = os.path.join(self.video_feature_path, self.class2name.get(label_id), vid_start_end)
+
+                # if os.path.exists(audio_path) and os.path.exists(visual_path):
+                self.av_files.append(vid_start_end)
+                self.name2class[vid_start_end] = label_id  # 关联类别
+
+    def __len__(self):
+        return len(self.av_files)
+
+    def __getitem__(self, idx):
+
+        file_path = self.av_files[idx]
+        label = self.name2class[file_path]
+
+        # 音频路径
+        audio_file_path = os.path.join(self.audio_feature_path, self.class2name[label], file_path + '.wav')
+
+        waveform, sample_rate = torchaudio.load(audio_file_path, normalize=True)
+        waveform = torchaudio.functional.resample(waveform, orig_freq=sample_rate, new_freq=22050)
+        waveform = waveform.repeat(1, 3)[:, :22050 * 3]
+        waveform = torch.clamp(waveform, -1, 1)
+
+        stft_transforms = torchaudio.transforms.Spectrogram(n_fft=512, hop_length=353, power=None, pad_mode='constant')
+        spectrogram = stft_transforms(waveform)
+        spectrogram = torch.log(torch.abs(spectrogram) + 1e-7)
+
+        audio_context = PIL.Image.fromarray(spectrogram.squeeze().numpy())  # (257, 188)
+        audio_context = self.audio_transform(audio_context)
+
+        pick_num = 3
+        visual_path = os.path.join(self.video_feature_path, self.class2name[label], file_path)
+        file_num = len(os.listdir(visual_path))
+        seg = int(file_num / pick_num)
+        path1 = []
+        image = []
+        image_arr = []
+        t = [0] * pick_num
+
+        for i in range(pick_num):
+            t[i] = seg * i + 1
+            path1.append('frame_' + str(t[i]) + '.jpg')
+            try:
+                image.append(PIL.Image.open(visual_path + "/" + path1[i]).convert('RGB'))
+            except:
+                raise BlockingIOError
+            image_arr.append(self.visual_transform(image[i]))
+            image_arr[i] = image_arr[i].unsqueeze(1).float()
+            if i == 0:
+                image_n = copy.copy(image_arr[i])
+            else:
+                image_n = torch.cat((image_n, image_arr[i]), 1)
+
+        visual_context = image_n
+
+        if self.modality == "visual":
+            return visual_context, label
+        elif self.modality == "audio":
+            return audio_context, label
+        elif self.modality == "audio-visual":
+            return (audio_context, visual_context), label
+
+
+def get_KineticSound_data(batch_size, num_workers=8, same_da=False,root=DATA_DIR, **kwargs):
+    """
+    获取CREMAD数据
+    :param batch_size: batch size
+    :param kwargs:
+    :return: (train loader, test loader, mixup_active, mixup_fn)
+    """
+    size = 224
+    modality = kwargs['modality']
+    args = kwargs['args']
+
+    class_names = {'blowing nose': 0, 'blowing out candles': 1, 'bowling': 2, 'chopping wood': 3, 'dribbling basketball': 4,
+     'laughing': 5, 'mowing lawn': 6, 'playing accordion': 7, 'playing bagpipes': 8, 'playing bass guitar': 9,
+     'playing clarinet': 10, 'playing drums': 11, 'playing guitar': 12, 'playing harmonica': 13, 'playing keyboard': 14,
+     'playing organ': 15, 'playing piano': 16, 'playing saxophone': 17, 'playing trombone': 18, 'playing trumpet': 19,
+     'playing violin': 20, 'playing xylophone': 21, 'ripping paper': 22, 'shoveling snow': 23, 'shuffling cards': 24,
+     'singing': 25, 'stomping grapes': 26, 'tap dancing': 27, 'tapping guitar': 28, 'tapping pen': 29, 'tickling': 30}
+
+    file_path = '/mnt/home/hexiang/kinetics_sound/'
+
+    visual_train_transform = transforms.Compose([
+        transforms.RandomResizedCrop(size),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),  # ImageNet标准化
+    ])
+
+
+    visual_test_transform = transforms.Compose([
+        transforms.Resize((size, size)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    audio_train_transform = transforms.Compose([
+        # transforms.Resize((size, size)),  # 将频谱图像调整到224x224; 为了能够使用collate_fn
+        transforms.ToTensor(),
+    ])
+
+    audio_test_transform = transforms.Compose([
+        # transforms.Resize((size, size)),  # 将频谱图像调整到224x224
+        transforms.ToTensor(),
+    ])
+
+    # 创建数据集实例，传入不同的transform
+    train_dataset = KineticSoundDataset(file_path, class_names, visual_transform=visual_train_transform, audio_transform=audio_train_transform, modality=modality, train=True)
+    test_dataset = KineticSoundDataset(file_path, class_names, visual_transform=visual_test_transform, audio_transform=audio_test_transform, modality=modality, train=False)
+
+    # 使用SubsetRandomSampler来创建训练和测试的DataLoader
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True,
+        pin_memory=True, drop_last=True, num_workers=32
+    )
+
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset, batch_size=batch_size, shuffle=False,
+        pin_memory=True, drop_last=False, num_workers=32
+    )
+
+    return train_loader, test_loader, None, None
 
 def get_cifar100_data(batch_size, num_workers=8, same_data=False,root=DATA_DIR, *args, **kwargs):
     """

@@ -35,13 +35,14 @@ If you find this work useful for your research, please kindly cite our paper and
 
 - KineticsSound:
 
-  We Follow We obtained the KineticsSound dataset using the method in [bmmal](https://github.com/MengShen0709/bmmal/tree/main) and thank them for their contribution! This will get a total of 31 classes, 14777 data for training and 2594 data for testing.
+  We Follow We obtained the KineticsSound dataset using the method in [bmmal](https://github.com/MengShen0709/bmmal/tree/main) and thank them for their contribution! This will get a total of 31 classes, 14772 data for training and 2594 data for testing. You can download our zipped dataset [here]().
 
   1. Download dataset following [Kinetics Datasets Downloader](https://github.com/cvdfoundation/kinetics-dataset)
   2. Run **kinetics_convert_avi.py** to convert mp4 files into avi files.
   3. Run **kinetics_arrange_by_class.py** to organize the files.
   4. Run **extract_wav_and_frames.py** to extract wav files and 10 frame images as jpg.
-  5. The final dataset file structure will be like:
+  5. Run **ks_find.py** to filter out disqualified data.
+  6. The final dataset file structure will be like:
 
 ```
 ├── kinetics_sound

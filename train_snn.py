@@ -92,22 +92,22 @@ parser.add_argument('-vb', '--validation-batch-size-multiplier', type=int, defau
                     help='ratio of validation batch size to training batch size (default: 1)')
 
 # Optimizer parameters
-parser.add_argument('--opt', default='adamw', type=str, metavar='OPTIMIZER',
-                    help='Optimizer (default: "adamw"')
+parser.add_argument('--opt', default='sgd', type=str, metavar='OPTIMIZER',
+                    help='Optimizer (default: "sgd"')
 parser.add_argument('--opt-eps', default=1e-8, type=float, metavar='EPSILON',
                     help='Optimizer Epsilon (default: None, use opt default)')
 parser.add_argument('--opt-betas', default=None, type=float, nargs='+', metavar='BETA',
                     help='Optimizer Betas (default: None, use opt default)')
 parser.add_argument('--momentum', type=float, default=0.9, metavar='M',
                     help='Optimizer momentum (default: 0.9)')
-parser.add_argument('--weight-decay', type=float, default=1e-4,
+parser.add_argument('--weight-decay', type=float, default=5e-4,
                     help='weight decay (default: 0.01 for adamw)')
 parser.add_argument('--clip-grad', type=float, default=None, metavar='NORM',
                     help='Clip gradient norm (default: None, no clipping)')
 parser.add_argument('--adam-epoch', type=int, default=1000, help='lamb switch to adamw')
 
 # Learning rate schedule parameters
-parser.add_argument('--sched', default='cosine', type=str, metavar='SCHEDULER',
+parser.add_argument('--sched', default='step', type=str, metavar='SCHEDULER',
                     help='LR scheduler (default: "cosine"')
 parser.add_argument('--lr', type=float, default=5e-3, metavar='LR',
                     help='learning rate (default: 0.01)')
@@ -129,7 +129,7 @@ parser.add_argument('--epochs', type=int, default=400, metavar='N',
                     help='number of epochs to train (default: 2)')
 parser.add_argument('--start-epoch', default=None, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('--decay-epochs', type=float, default=30, metavar='N',
+parser.add_argument('--decay-epochs', type=float, default=70, metavar='N',
                     help='epoch interval to decay LR')
 parser.add_argument('--warmup-epochs', type=int, default=0, metavar='N',
                     help='epochss to warmup LR, if scheduler supports')
@@ -342,15 +342,17 @@ parser.add_argument('--use_video_frames', default=3, type=int)
 parser.add_argument('--audio_path', default='/mnt/home/hexiang/datasets/CREMA-D/AudioWAV/', type=str)
 parser.add_argument('--visual_path', default='/mnt/home/hexiang/datasets/CREMA-D/', type=str)
 
-parser.add_argument('--modulation_starts', default=15, type=int, help='where modulation begins')
-parser.add_argument('--modulation_ends', default=60, type=int, help='where modulation ends')
+parser.add_argument('--modulation_starts', default=0, type=int, help='where modulation begins')
+parser.add_argument('--modulation_ends', default=50, type=int, help='where modulation ends')
 parser.add_argument('--alpha', required=True, type=float, help='alpha in OGM-GE')
 
 parser.add_argument('--inverse', action='store_true', help='inverse effectiveness')
+parser.add_argument('--inverse_starts', default=20, type=int, help='where modulation begins')
+parser.add_argument('--inverse_ends', default=70, type=int, help='where modulation ends')
 parser.add_argument('--meta_ratio', default=-1., type=float, help='meta ratio')
 
-parser.add_argument('--joint_train_starts', default=15, type=int, help='where adversial attack starts')
-parser.add_argument('--joint_train_ends', default=60, type=int, help='where adversial attack starts')
+parser.add_argument('--discriminator_epoch', default=60, type=int, help='where adversial attack starts')
+
 # snr value
 parser.add_argument('--snr', default=-100, type=float,
                     help='random noise amplitude controled by snr, 0 means no noise')
@@ -395,10 +397,6 @@ def main(model, loader_train, loader_eval, output_dir):
     # _logger.info('flops = %fM', flops / 1e6)
     # _logger.info('param size = %fM', params / 1e6)
 
-    linear_scaled_lr = args.lr * args.batch_size * args.world_size / 1024.0
-    args.lr = linear_scaled_lr
-    _logger.info("learning rate is %f" % linear_scaled_lr)
-
     if args.aug_splits > 0:
         assert args.aug_splits > 1, 'A split of 1 makes no sense'
         num_aug_splits = args.aug_splits
@@ -435,6 +433,38 @@ def main(model, loader_train, loader_eval, output_dir):
             model = model.to(memory_format=torch.channels_last)
 
     optimizer = create_optimizer(args, model)
+
+    if args.fusion_method == "metamodal":
+        # 假设 model.fusion_module.discriminator_fc 是判别器所在模块
+        # 先构建一个判别器参数的集合（基于 id 比较更保险）
+        discriminator_params = {id(p) for name, p in model.named_parameters() if "discriminator_fc" in name}
+
+        # 从现有 optimizer.param_groups 中剥离出判别器参数
+        disc_params = []
+        for group in optimizer.param_groups:
+            new_group_params = []
+            for param in group["params"]:
+                if id(param) in discriminator_params:
+                    disc_params.append(param)
+                else:
+                    new_group_params.append(param)
+            group["params"] = new_group_params
+
+        # 将判别器参数添加为一个新的 param_group，初始 lr=0，其他超参（如 weight_decay、momentum）可参考一个已有的组
+        ref_group = optimizer.param_groups[0]  # 例如取第一个组的超参
+        disc_group_bias = {
+            "params": disc_params[0],
+            "lr": 0.0,  # 冻结判别器
+            "weight_decay": 0.0,
+        }
+        optimizer.add_param_group(disc_group_bias)
+
+        disc_group_weight = {
+            "params": disc_params[1],
+            "lr": 0.0,  # 冻结判别器
+            "weight_decay": args.weight_decay,
+        }
+        optimizer.add_param_group(disc_group_weight)
 
     amp_autocast = suppress  # do nothing
     loss_scaler = None
@@ -590,7 +620,10 @@ def main(model, loader_train, loader_eval, output_dir):
             model_without_ddp.reset_drop_path(0.0)
 
         for epoch in range(start_epoch, args.epochs):
-            if epoch == args.joint_train_starts:
+            if epoch == args.discriminator_epoch:
+                if args.fusion_method == "metamodal":
+                    optimizer.param_groups[2]["lr"] = ref_group.get("lr")
+                    optimizer.param_groups[3]["lr"] = ref_group.get("lr")
                 model.meta_modality = True
 
             if epoch == 0 and args.reset_drop:
@@ -680,19 +713,17 @@ def train_epoch(
     tanh = nn.Tanh()
 
     # 计算开始步数和总步数
-    start_steps = (epoch - args.joint_train_starts) * len(loader)  # 减去的值和discrimination fc的epoch一样
-    total_steps = (args.joint_train_ends - args.joint_train_starts) * len(loader)
+    start_steps = (epoch - args.discriminator_epoch) * len(loader)  # 减去的值和discrimination fc的epoch一样
+    total_steps = (args.epochs - args.discriminator_epoch) * len(loader)
 
     for batch_idx, samples in enumerate(loader):
         inputs, target = samples
         # 计算进度比例 p
         p = float(batch_idx + start_steps) / total_steps
         # 根据公式计算 alpha
-        alpha = 2.0 / (1.0 + np.exp(-0.5 * (1 - p))) - 1.0
-        if epoch < args.joint_train_starts:
-            alpha = 1.
-        elif epoch > args.joint_train_ends:
-            alpha = 0.
+        alpha = 2. / (1. + np.exp(-4 * p)) - 1
+        if epoch < args.discriminator_epoch:
+            alpha = 0.0
         if args.dataset == "UrbanSound8K" or args.dataset == "AvCifar10" or args.dataset == "CREMAD":
             if args.modality == "audio-visual":
                 inputs = list(repeat(item, 'b c w h -> b t c w h', t=args.step) for item in inputs)
@@ -701,6 +732,17 @@ def train_epoch(
                     inputs[1] = image + torch.randn(image.shape) * math.sqrt(torch.mean(torch.pow(image, 2)) / math.pow(10, args.snr / 10))
             else:
                 inputs = repeat(inputs, 'b c w h -> b t c w h', t=args.step)
+        if args.dataset == "KineticSound":
+            if args.modality == "audio-visual":
+                inputs = list([repeat(inputs[0], 'b c w h -> b t c w h', t=args.step), repeat(inputs[1], 'b c n w h -> b t c n w h', t=args.step)])
+                if args.snr >= -10:
+                    image = inputs[1]
+                    inputs[1] = image + torch.randn(image.shape) * math.sqrt(torch.mean(torch.pow(image, 2)) / math.pow(10, args.snr / 10))
+            elif args.modality == "audio":
+                inputs = repeat(inputs, 'b c w h -> b t c w h', t=args.step)
+            else:
+                inputs = repeat(inputs, 'b c n w h -> b t c n w h', t=args.step)
+
         last_batch = batch_idx == last_idx
 
         data_time_m.update(time.time() - end)
@@ -712,42 +754,34 @@ def train_epoch(
         with amp_autocast():
             if args.modality == "audio-visual":
                 if args.fusion_method == 'metamodal':
-                    output_a, output_v, fea_a, fea_v, output = model(inputs, alpha=alpha)
+                    output_a, output_v, disc_pred_a, disc_pred_v, output = model(inputs, alpha=alpha)
                 else:
-                    fea_a, fea_v, output = model(inputs, alpha=alpha)
+                    output_a, output_v, output = model(inputs, alpha=alpha)
+                # output_a = output_a.detach()
+                # output_v = output_v.detach()
+                weight_size = model.fusion_module.fc_out.weight.size(1)
+                output_v = (torch.mm(output_v, torch.transpose(model.fusion_module.fc_out.weight[:, weight_size // 2:], 0, 1))
+                            + model.fusion_module.fc_out.bias / 2)
 
-                if args.modulation == "OGM_GE":
-                    fea_a = fea_a.detach()
-                    fea_v = fea_v.detach()
-                    weight_size = model.fusion_module.fc_out.weight.size(1)
-                    fea_v = (torch.mm(fea_v, torch.transpose(model.fusion_module.fc_out.weight[:, weight_size // 2:], 0, 1))
-                                + model.fusion_module.fc_out.bias / 2)
-
-                    fea_a = (torch.mm(fea_a, torch.transpose(model.fusion_module.fc_out.weight[:, :weight_size // 2], 0, 1))
-                                + model.fusion_module.fc_out.bias / 2)
+                output_a = (torch.mm(output_a, torch.transpose(model.fusion_module.fc_out.weight[:, :weight_size // 2], 0, 1))
+                            + model.fusion_module.fc_out.bias / 2)
 
             else:
                 output = model(inputs, alpha=alpha)
 
-            if args.fusion_method == 'metamodal':
-                if epoch < args.joint_train_ends:
-                    loss = loss_fn(output_a, target) + loss_fn(output_v, target)
-                    if model.meta_modality:
-                        loss += loss_fn(output, target)
-                else:
-                    loss = loss_fn(output, target)
-            else:
-                loss = loss_fn(output, target)
+            loss = loss_fn(output, target)
+
+            if args.meta_ratio > 0.0 and model.meta_modality:
+                # 判别器的标签，音频为0，视觉为1
+                audio_labels = torch.zeros(inputs[0].shape[0]).type(torch.LongTensor).to("cuda:0")
+                visual_labels = torch.ones(inputs[1].shape[0]).type(torch.LongTensor).to("cuda:0")
+                loss_v = ce(disc_pred_v, visual_labels)
+                loss_a = ce(disc_pred_a, audio_labels)
+                loss += args.meta_ratio * (loss_a + loss_v)
 
         if not (args.cut_mix | args.mix_up | args.event_mix | (args.cutmix != 0.) | (args.mixup != 0.)):
             # print(output.shape, target.shape)
-            if args.fusion_method == 'metamodal' and model.meta_modality is False:
-                acc1_a, acc5_a = accuracy(output_a, target, topk=(1, 5))
-                acc1_v, acc5_v = accuracy(output_v, target, topk=(1, 5))
-                acc1 = (acc1_a + acc1_v) / 2
-                acc5 = (acc5_a + acc5_v) / 2
-            else:
-                acc1, acc5 = accuracy(output, target, topk=(1, 5))
+            acc1, acc5 = accuracy(output, target, topk=(1, 5))
             # acc1, = accuracy(output, target)
         else:
             acc1, acc5 = torch.tensor([0.]), torch.tensor([0.])
@@ -763,67 +797,63 @@ def train_epoch(
             if args.clip_grad is not None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad)
 
-            if args.modulation == "OGM_GE":
-                # Modulation starts here !
-                score_v = sum([softmax(fea_v)[i][target[i]] for i in range(fea_v.size(0))])
-                score_a = sum([softmax(fea_a)[i][target[i]] for i in range(fea_a.size(0))])
-                score_av = sum([softmax(output)[i][target[i]] for i in range(output.size(0))])
+            # Modulation starts here !
+            score_v = sum([softmax(output_v)[i][target[i]] for i in range(output_v.size(0))])
+            score_a = sum([softmax(output_a)[i][target[i]] for i in range(output_a.size(0))])
+            score_av = sum([softmax(output)[i][target[i]] for i in range(output.size(0))])
 
-                ratio_v = score_v / score_a
-                ratio_a = 1 / ratio_v
-                ratio_av = (score_a + score_v) / score_av
+            ratio_v = score_v / score_a
+            ratio_a = 1 / ratio_v
+            ratio_av = (score_a + score_v) / score_av
 
-                """
-                Below is the Eq.(10) in our CVPR paper:
-                        1 - tanh(alpha * rho_t_u), if rho_t_u > 1
-                k_t_u =
-                        1,                         else
-                coeff_u is k_t_u, where t means iteration steps and u is modality indicator, either a or v.
-                """
+            """
+            Below is the Eq.(10) in our CVPR paper:
+                    1 - tanh(alpha * rho_t_u), if rho_t_u > 1
+            k_t_u =
+                    1,                         else
+            coeff_u is k_t_u, where t means iteration steps and u is modality indicator, either a or v.
+            """
 
-                if ratio_v > 1:
-                    coeff_v = 1 - tanh(args.alpha * relu(ratio_v))
-                    coeff_a = 1
-                else:
-                    coeff_a = 1 - tanh(args.alpha * relu(ratio_a))
-                    coeff_v = 1
-                coeff_av = 1 + tanh(torch.tensor(1.0) - ratio_av)  # a 和 v 越弱, av出来越强
+            if ratio_v > 1:
+                coeff_v = 1 - tanh(args.alpha * relu(ratio_v))
+                coeff_a = 1
+            else:
+                coeff_a = 1 - tanh(args.alpha * relu(ratio_a))
+                coeff_v = 1
+            coeff_av = 1 + tanh(2. * (1. - ratio_av))  # a 和 v 越弱, av出来越强
 
-                if args.modulation_starts <= epoch <= args.modulation_ends:  # bug fixed
-                    for name, parms in model.named_parameters():
-                        layer = str(name).split('.')[0]
+            if args.modulation_starts <= epoch <= args.modulation_ends:  # bug fixed
+                for name, parms in model.named_parameters():
+                    layer = str(name).split('.')[0]
 
-                        if 'audio' in layer:
-                            try:
-                                para_len = len(parms.grad.size())
-                                if para_len == 4:
-                                    if args.modulation == 'OGM_GE':  # bug fixed
-                                        parms.grad = parms.grad * coeff_a + \
-                                                     torch.zeros_like(parms.grad).normal_(0, parms.grad.std().item() + 1e-8)
-                            except:
-                                pass
+                    if 'audio' in layer:
+                        try:
+                            para_len = len(parms.grad.size())
+                            if para_len == 4:
+                                if args.modulation == 'OGM_GE':  # bug fixed
+                                    parms.grad = parms.grad * coeff_a + \
+                                                 torch.zeros_like(parms.grad).normal_(0, parms.grad.std().item() + 1e-8)
+                        except:
+                            pass
 
-                        if 'visual' in layer:
-                            try:
-                                para_len = len(parms.grad.size())
-                                if para_len == 4:
-                                    if args.modulation == 'OGM_GE':  # bug fixed
-                                        parms.grad = parms.grad * coeff_v + \
-                                                     torch.zeros_like(parms.grad).normal_(0, parms.grad.std().item() + 1e-8)
-                            except:
-                                pass
+                    if 'visual' in layer:
+                        try:
+                            para_len = len(parms.grad.size())
+                            if para_len == 4:
+                                if args.modulation == 'OGM_GE':  # bug fixed
+                                    parms.grad = parms.grad * coeff_v + \
+                                                 torch.zeros_like(parms.grad).normal_(0, parms.grad.std().item() + 1e-8)
+                        except:
+                            pass
+            else:
+                pass
 
-                        if 'fusion' in layer and str(name).split('.')[1] == "fc_out":
-                            if args.inverse is True:
-                                parms.grad = parms.grad * coeff_av
-                else:
-                    pass
-
-            # for name, parms in model.named_parameters():
-            #     layer = str(name).split('.')[0]
-            #     if 'fusion' in layer and str(name).split('.')[1] == "fc_out":
-            #         if args.inverse is True:
-            #             parms.grad = parms.grad * coeff_av
+            if args.inverse_starts <= epoch <= args.inverse_ends:
+                for name, parms in model.named_parameters():
+                    layer = str(name).split('.')[0]
+                    if 'fusion' in layer and str(name).split('.')[1] == "fc_out":
+                        if args.inverse is True:
+                            parms.grad = parms.grad * coeff_av
 
             optimizer.step()
 
@@ -935,6 +965,19 @@ def validate(epoch, model, loader, loss_fn, args, amp_autocast=suppress,
                     inputs = list(repeat(item, 'b c w h -> b t c w h', t=args.step) for item in inputs)
                 else:
                     inputs = repeat(inputs, 'b c w h -> b t c w h', t=args.step)
+            if args.dataset == "KineticSound":
+                if args.modality == "audio-visual":
+                    inputs = list([repeat(inputs[0], 'b c w h -> b t c w h', t=args.step),
+                                   repeat(inputs[1], 'b c n w h -> b t c n w h', t=args.step)])
+                    if args.snr >= -10:
+                        image = inputs[1]
+                        inputs[1] = image + torch.randn(image.shape) * math.sqrt(
+                            torch.mean(torch.pow(image, 2)) / math.pow(10, args.snr / 10))
+                elif args.modality == "audio":
+                    inputs = repeat(inputs, 'b c w h -> b t c w h', t=args.step)
+                else:
+                    inputs = repeat(inputs, 'b c n w h -> b t c n w h', t=args.step)
+
             last_batch = batch_idx == last_idx
             if not args.prefetcher or args.dataset != 'imnet':
                 if args.modality == "audio-visual":
@@ -971,14 +1014,7 @@ def validate(epoch, model, loader, loss_fn, args, amp_autocast=suppress,
             loss = loss_fn(output, target)
             if args.tet_loss:
                 output = output.mean(0)
-
-            if args.fusion_method == 'metamodal' and model.meta_modality is False:
-                acc1_a, acc5_a = accuracy(output_a, target, topk=(1, 5))
-                acc1_v, acc5_v = accuracy(output_v, target, topk=(1, 5))
-                acc1 = (acc1_a + acc1_v) / 2
-                acc5 = (acc5_a + acc5_v) / 2
-            else:
-                acc1, acc5 = accuracy(output, target, topk=(1, 5))
+            acc1, acc5 = accuracy(output, target, topk=(1, 5))
 
             if args.distributed:
                 reduced_loss = reduce_tensor(loss.data, args.world_size)

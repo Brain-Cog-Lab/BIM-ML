@@ -156,5 +156,5 @@ if __name__ == "__main__":
     kinetics_400_dir = pathlib.Path("/mnt/home/hexiang/kinetics-dataset/")
     # prepare my_{split}.txt under kinetics_sound_dir before processing
     kinetics_sound_dir = pathlib.Path("/mnt/home/hexiang/kinetics_sound/")
-    extract_frames_from_avi()
+    # extract_frames_from_avi()
     extract_wav_from_avi()
