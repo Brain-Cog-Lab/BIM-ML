@@ -336,7 +336,7 @@ parser.add_argument('--modality', type=str, default='visual')
 parser.add_argument('--modulation', default='Normal', type=str,
                     choices=['Normal', 'OGM_GE'])
 parser.add_argument('--fusion_method', default='concat', type=str,
-                    choices=['concat', 'metamodal'])
+                    choices=['concat', 'avattn'])
 parser.add_argument('--fps', default=1, type=int)
 parser.add_argument('--use_video_frames', default=3, type=int)
 parser.add_argument('--audio_path', default='/mnt/home/hexiang/datasets/CREMA-D/AudioWAV/', type=str)
@@ -347,11 +347,11 @@ parser.add_argument('--modulation_ends', default=50, type=int, help='where modul
 parser.add_argument('--alpha', required=True, type=float, help='alpha in OGM-GE')
 
 parser.add_argument('--inverse', action='store_true', help='inverse effectiveness')
-parser.add_argument('--inverse_starts', default=20, type=int, help='where modulation begins')
-parser.add_argument('--inverse_ends', default=70, type=int, help='where modulation ends')
+parser.add_argument('--inverse_starts', default=0, type=int, help='where modulation begins')
+parser.add_argument('--inverse_ends', default=100, type=int, help='where modulation ends')
 parser.add_argument('--meta_ratio', default=-1., type=float, help='meta ratio')
 
-parser.add_argument('--discriminator_epoch', default=60, type=int, help='where adversial attack starts')
+parser.add_argument('--psai', default=1.0, type=float, help='inverse intense')
 
 # snr value
 parser.add_argument('--snr', default=-100, type=float,
@@ -433,38 +433,6 @@ def main(model, loader_train, loader_eval, output_dir):
             model = model.to(memory_format=torch.channels_last)
 
     optimizer = create_optimizer(args, model)
-
-    if args.fusion_method == "metamodal":
-        # 假设 model.fusion_module.discriminator_fc 是判别器所在模块
-        # 先构建一个判别器参数的集合（基于 id 比较更保险）
-        discriminator_params = {id(p) for name, p in model.named_parameters() if "discriminator_fc" in name}
-
-        # 从现有 optimizer.param_groups 中剥离出判别器参数
-        disc_params = []
-        for group in optimizer.param_groups:
-            new_group_params = []
-            for param in group["params"]:
-                if id(param) in discriminator_params:
-                    disc_params.append(param)
-                else:
-                    new_group_params.append(param)
-            group["params"] = new_group_params
-
-        # 将判别器参数添加为一个新的 param_group，初始 lr=0，其他超参（如 weight_decay、momentum）可参考一个已有的组
-        ref_group = optimizer.param_groups[0]  # 例如取第一个组的超参
-        disc_group_bias = {
-            "params": disc_params[0],
-            "lr": 0.0,  # 冻结判别器
-            "weight_decay": 0.0,
-        }
-        optimizer.add_param_group(disc_group_bias)
-
-        disc_group_weight = {
-            "params": disc_params[1],
-            "lr": 0.0,  # 冻结判别器
-            "weight_decay": args.weight_decay,
-        }
-        optimizer.add_param_group(disc_group_weight)
 
     amp_autocast = suppress  # do nothing
     loss_scaler = None
@@ -620,11 +588,6 @@ def main(model, loader_train, loader_eval, output_dir):
             model_without_ddp.reset_drop_path(0.0)
 
         for epoch in range(start_epoch, args.epochs):
-            if epoch == args.discriminator_epoch:
-                if args.fusion_method == "metamodal":
-                    optimizer.param_groups[2]["lr"] = ref_group.get("lr")
-                    optimizer.param_groups[3]["lr"] = ref_group.get("lr")
-                model.meta_modality = True
 
             if epoch == 0 and args.reset_drop:
                 model_without_ddp.reset_drop_path(args.drop_path)
@@ -692,7 +655,8 @@ def train_epoch(
     batch_time_m = AverageMeter()
     data_time_m = AverageMeter()
     losses_m = AverageMeter()
-    # closses_m = AverageMeter()
+    losses_single_modal_m = AverageMeter()
+    losses_inverse_m = AverageMeter()
     top1_m = AverageMeter()
     top5_m = AverageMeter()
 
@@ -712,18 +676,14 @@ def train_epoch(
     relu = nn.ReLU(inplace=True)
     tanh = nn.Tanh()
 
-    # 计算开始步数和总步数
-    start_steps = (epoch - args.discriminator_epoch) * len(loader)  # 减去的值和discrimination fc的epoch一样
-    total_steps = (args.epochs - args.discriminator_epoch) * len(loader)
+    set_MaxUnimodal_epoch = args.epochs
+    Coeff_Unimodal = 0.0
 
     for batch_idx, samples in enumerate(loader):
+        ratio = ((batch_idx + epoch * iters_per_epoch) / (set_MaxUnimodal_epoch * iters_per_epoch))
+        ratio = max(0.0, min(ratio, 1.0))  # clamp 到 [0, 1]
+        Coeff_Unimodal = (1 - ratio) ** 3
         inputs, target = samples
-        # 计算进度比例 p
-        p = float(batch_idx + start_steps) / total_steps
-        # 根据公式计算 alpha
-        alpha = 2. / (1. + np.exp(-4 * p)) - 1
-        if epoch < args.discriminator_epoch:
-            alpha = 0.0
         if args.dataset == "UrbanSound8K" or args.dataset == "AvCifar10" or args.dataset == "CREMAD":
             if args.modality == "audio-visual":
                 inputs = list(repeat(item, 'b c w h -> b t c w h', t=args.step) for item in inputs)
@@ -753,31 +713,88 @@ def train_epoch(
                 inputs, target = inputs.type(torch.FloatTensor).cuda(), target.cuda()
         with amp_autocast():
             if args.modality == "audio-visual":
-                if args.fusion_method == 'metamodal':
-                    output_a, output_v, disc_pred_a, disc_pred_v, output = model(inputs, alpha=alpha)
-                else:
-                    output_a, output_v, output = model(inputs, alpha=alpha)
+                output_a, output_v, output = model(inputs)
                 # output_a = output_a.detach()
                 # output_v = output_v.detach()
                 weight_size = model.fusion_module.fc_out.weight.size(1)
-                output_v = (torch.mm(output_v, torch.transpose(model.fusion_module.fc_out.weight[:, weight_size // 2:], 0, 1))
+                output_v_ogm = (torch.mm(output_v, torch.transpose(model.fusion_module.fc_out.weight[:, weight_size // 2:], 0, 1))
                             + model.fusion_module.fc_out.bias / 2)
 
-                output_a = (torch.mm(output_a, torch.transpose(model.fusion_module.fc_out.weight[:, :weight_size // 2], 0, 1))
+                output_a_ogm = (torch.mm(output_a, torch.transpose(model.fusion_module.fc_out.weight[:, :weight_size // 2], 0, 1))
                             + model.fusion_module.fc_out.bias / 2)
 
             else:
-                output = model(inputs, alpha=alpha)
+                output = model(inputs)
 
             loss = loss_fn(output, target)
+            loss_single_modal = torch.tensor(0.)
+            loss_inverse = torch.tensor(0.)
 
-            if args.meta_ratio > 0.0 and model.meta_modality:
-                # 判别器的标签，音频为0，视觉为1
-                audio_labels = torch.zeros(inputs[0].shape[0]).type(torch.LongTensor).to("cuda:0")
-                visual_labels = torch.ones(inputs[1].shape[0]).type(torch.LongTensor).to("cuda:0")
-                loss_v = ce(disc_pred_v, visual_labels)
-                loss_a = ce(disc_pred_a, audio_labels)
-                loss += args.meta_ratio * (loss_a + loss_v)
+            # output_a = torch.mm(output_a, torch.transpose(model.audio_fc.weight, 0, 1)) + model.audio_fc.bias
+            # output_v = torch.mm(output_v, torch.transpose(model.visual_fc.weight, 0, 1)) + model.visual_fc.bias
+            # loss_a = loss_fn(output_a, target)
+            # loss_v = loss_fn(output_v, target)
+            #
+            # loss_single_modal = loss_a + loss_v  # 这里需要更新单模态的分类头
+            # loss = loss + loss_single_modal
+
+            # if args.inverse:
+            #     output_a = torch.mm(output_a, torch.transpose(model.audio_fc.weight, 0, 1)) + model.audio_fc.bias
+            #     output_v = torch.mm(output_v, torch.transpose(model.visual_fc.weight, 0, 1)) + model.visual_fc.bias
+            #     loss_a = loss_fn(output_a, target)
+            #     loss_v = loss_fn(output_v, target)
+            #
+            #     loss_single_modal = loss_a + loss_v  # 这里需要更新单模态的分类头
+            #     loss = loss + loss_single_modal
+
+                # if args.inverse_starts <= epoch <= args.inverse_ends:
+                #     output_av = output_a_ogm + output_v_ogm
+                #     loss_av = loss_fn(output_av, target)
+                #
+                #     # --- 3) 计算Synergy (逆有效性奖励) ---
+                #     synergy_v = max(loss_v - loss_av, 0.0)
+                #     synergy_a = max(loss_a - loss_av, 0.0)
+                #     synergy_sum = synergy_v + synergy_a
+                #
+                #     loss_inverse = torch.tensor(synergy_sum, dtype=torch.float32)
+                #
+                #     loss = loss - args.psai * synergy_sum
+
+        # Modulation starts here !
+        score_v = sum([softmax(output_v_ogm)[i][target[i]] for i in range(output_v_ogm.size(0))])
+        score_a = sum([softmax(output_a_ogm)[i][target[i]] for i in range(output_a_ogm.size(0))])
+
+        ratio_v = score_v / score_a
+        ratio_a = 1 / ratio_v
+
+        if ratio_v > 1:
+            coeff_v = 1 - tanh(args.alpha * relu(ratio_v))
+            coeff_a = 1
+        else:
+            coeff_a = 1 - tanh(args.alpha * relu(ratio_a))
+            coeff_v = 1
+
+        if args.inverse:
+            output_a = torch.mm(output_a, torch.transpose(model.audio_fc.weight, 0, 1)) + model.audio_fc.bias
+            output_v = torch.mm(output_v, torch.transpose(model.visual_fc.weight, 0, 1)) + model.visual_fc.bias
+            loss_a = loss_fn(output_a, target)
+            loss_v = loss_fn(output_v, target)
+
+            loss_single_modal = loss_a + loss_v  # 这里需要更新单模态的分类头
+            loss = loss + loss_single_modal
+
+            score_v = sum([softmax(output_v)[i][target[i]] for i in range(output_v.size(0))])
+            score_a = sum([softmax(output_a)[i][target[i]] for i in range(output_a.size(0))])
+            score_av = sum([softmax(output)[i][target[i]] for i in range(output.size(0))])
+
+            ratio_av = ((score_a + score_v) / 2) / score_av
+            coeff_av = 1 + tanh(1. - ratio_av)  # a 和 v 越弱, av出来越强
+
+        # loss_a, loss_v = loss_fn(output_a, target), loss_fn(output_v, target)
+        # if not args.inverse:
+        #     coeff_av = 1.0
+        # # print("cooeff_av:{}".format(coeff_av))
+        # loss = loss + coeff_av * Coeff_Unimodal * (loss_a + loss_v)
 
         if not (args.cut_mix | args.mix_up | args.event_mix | (args.cutmix != 0.) | (args.mixup != 0.)):
             # print(output.shape, target.shape)
@@ -797,15 +814,6 @@ def train_epoch(
             if args.clip_grad is not None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad)
 
-            # Modulation starts here !
-            score_v = sum([softmax(output_v)[i][target[i]] for i in range(output_v.size(0))])
-            score_a = sum([softmax(output_a)[i][target[i]] for i in range(output_a.size(0))])
-            score_av = sum([softmax(output)[i][target[i]] for i in range(output.size(0))])
-
-            ratio_v = score_v / score_a
-            ratio_a = 1 / ratio_v
-            ratio_av = (score_a + score_v) / score_av
-
             """
             Below is the Eq.(10) in our CVPR paper:
                     1 - tanh(alpha * rho_t_u), if rho_t_u > 1
@@ -813,14 +821,6 @@ def train_epoch(
                     1,                         else
             coeff_u is k_t_u, where t means iteration steps and u is modality indicator, either a or v.
             """
-
-            if ratio_v > 1:
-                coeff_v = 1 - tanh(args.alpha * relu(ratio_v))
-                coeff_a = 1
-            else:
-                coeff_a = 1 - tanh(args.alpha * relu(ratio_a))
-                coeff_v = 1
-            coeff_av = 1 + tanh(2. * (1. - ratio_av))  # a 和 v 越弱, av出来越强
 
             if args.modulation_starts <= epoch <= args.modulation_ends:  # bug fixed
                 for name, parms in model.named_parameters():
@@ -853,7 +853,7 @@ def train_epoch(
                     layer = str(name).split('.')[0]
                     if 'fusion' in layer and str(name).split('.')[1] == "fc_out":
                         if args.inverse is True:
-                            parms.grad = parms.grad * coeff_av
+                            parms.grad = parms.grad * coeff_av + torch.zeros_like(parms.grad).normal_(0, parms.grad.std().item() + 1e-8)
 
             optimizer.step()
 
@@ -879,6 +879,9 @@ def train_epoch(
                 acc5 = reduce_tensor(acc5, args.world_size)
 
             losses_m.update(loss.item(), output.size(0))
+            if args.inverse:
+                losses_single_modal_m.update(loss_single_modal.item(), output.size(0))
+                losses_inverse_m.update(loss_inverse.item(), output.size(0))
             top1_m.update(acc1.item(), output.size(0))
             top5_m.update(acc5.item(), output.size(0))
 
@@ -887,6 +890,8 @@ def train_epoch(
                 _logger.info(
                     'Train: {} [{:>4d}/{} ({:>3.0f}%)]  '
                     'Loss: {loss.val:>9.6f} ({loss.avg:>6.4f})  '
+                    'Loss_single: {loss_single.val:>9.6f} ({loss_single.avg:>6.4f})  '
+                    'Loss_inverse: {loss_inverse.val:>9.6f} ({loss_inverse.avg:>6.4f})  '
                     'Acc@1: {top1.val:>7.4f} ({top1.avg:>7.4f})  '
                     'Acc@5: {top5.val:>7.4f} ({top5.avg:>7.4f})  '
                     'Time: {batch_time.val:.3f}s, {rate:>7.2f}/s  '
@@ -897,6 +902,8 @@ def train_epoch(
                         batch_idx, iters_per_epoch,
                         100. * batch_idx / last_idx,
                         loss=losses_m,
+                        loss_single=losses_single_modal_m,
+                        loss_inverse=losses_inverse_m,
                         top1=top1_m,
                         top5=top5_m,
                         batch_time=batch_time_m,
@@ -934,7 +941,7 @@ def train_epoch(
     if args.rand_step:
         model.set_attr('step', args.step)
 
-    return OrderedDict([('loss', losses_m.avg)])
+    return OrderedDict([('loss', losses_m.avg), ('loss_single', losses_single_modal_m.avg), ('loss_inverse', losses_inverse_m.avg)])
 
 
 def validate(epoch, model, loader, loss_fn, args, amp_autocast=suppress,
@@ -994,12 +1001,9 @@ def validate(epoch, model, loader, loss_fn, args, amp_autocast=suppress,
             with amp_autocast():
 
                 if args.modality == "audio-visual":
-                    if args.fusion_method == 'metamodal':
-                        output_a, output_v, disc_pred_a, disc_pred_v, output = model(inputs, alpha=1.0)  # 推理时候的alpha可以随便给
-                    else:
-                        output_a, output_v, output = model(inputs, alpha=1.0)
+                    _, _, output = model(inputs)
                 else:
-                    output = model(inputs, alpha=1.0)
+                    output = model(inputs)
 
             if isinstance(output, (tuple, list)):
                 output = output[0]
@@ -1082,6 +1086,10 @@ def top_1_acc(logits, target):
 
 
 if __name__ == '__main__':
+    torch.set_num_threads(20)
+    os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
+    os.environ["OMP_NUM_THREADS"] = "20"  # 设置OpenMP计算库的线程数
+    os.environ["MKL_NUM_THREADS"] = "20"  # 设置MKL-DNN CPU加速库的线程数。
     args, args_text = _parse_args()
     # args.no_spike_output = args.no_spike_output | args.cut_mix
     args.no_spike_output = True
@@ -1095,8 +1103,8 @@ if __name__ == '__main__':
             args.modality,
             args.modulation,
             "inverse_{}".format(args.inverse),
+            "psai_{}".format(args.psai),
             "fusion_{}".format(args.fusion_method),
-            "metaratio_{}".format(args.meta_ratio),
             "seed_{}".format(args.seed),
             args.node_type,
             str(args.step),

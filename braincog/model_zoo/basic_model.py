@@ -9,7 +9,7 @@ from braincog.base.node.node import *
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .fusion_modules import SumFusion, ConcatFusion, FiLM, GatedFusion, IdenticalFusion, MetamodalFusion, OGMGE_MetamodalFusion
+from .fusion_modules import SumFusion, ConcatFusion, FiLM, GatedFusion, IdenticalFusion, AvattnlFusion, OGMGE_MetamodalFusion
 
 
 class AVClassifier(BaseModule):
@@ -29,8 +29,8 @@ class AVClassifier(BaseModule):
             self.fusion_module = GatedFusion(output_dim=n_classes, x_gate=True)
         elif self.fusion == 'identical':
             self.fusion_module = IdenticalFusion(output_dim=n_classes)
-        elif self.fusion == 'metamodal':
-            self.fusion_module = MetamodalFusion(output_dim=n_classes)
+        elif self.fusion == 'avattn':
+            self.fusion_module = AvattnlFusion(output_dim=n_classes)
         elif self.fusion == 'ogmge_metamodal':
             self.fusion_module = OGMGE_MetamodalFusion(output_dim=n_classes)
         else:
@@ -39,8 +39,10 @@ class AVClassifier(BaseModule):
         self.audio_net = resnet18(node_type=ReLUNode, step=1, dataset=kwargs["dataset"], modality='audio')
         self.visual_net = resnet18(node_type=ReLUNode, step=1, dataset=kwargs["dataset"], modality='visual')
         self.meta_modality = False
+        self.audio_fc = nn.Linear(512, n_classes)
+        self.visual_fc = nn.Linear(512, n_classes)
 
-    def forward(self, input, alpha):
+    def forward(self, input):
         """
             audio: shape [128, t, 1, 128, 128]
             visual: shape [128, t, 3, 128, 128]
@@ -69,24 +71,15 @@ class AVClassifier(BaseModule):
             v = v.view(B, -1, C, H, W)
             v = torch.mean(v, dim=1)
 
-            if "metamodal" in self.fusion:
-                a = a.view(B, -1, C)
-                v = v.view(B, -1, C)
-                output_a, output_v, disc_pred_a, disc_pred_v, out = self.fusion_module(a, v, alpha)
-                output_a_list.append(output_a), output_v_list.append(output_v), disc_pred_a_list.append(disc_pred_a), disc_pred_v_list.append(disc_pred_v), out_list.append(out)
-            else:
-                a = F.adaptive_avg_pool2d(a, 1)
-                v = F.adaptive_avg_pool2d(v, 1)
+            a = F.adaptive_avg_pool2d(a, 1)
+            v = F.adaptive_avg_pool2d(v, 1)
 
-                a = torch.flatten(a, 1)
-                v = torch.flatten(v, 1)
-                output_a, output_v, out = self.fusion_module(a, v)
-                output_a_list.append(output_a), output_v_list.append(output_v), out_list.append(out)
+            a = torch.flatten(a, 1)
+            v = torch.flatten(v, 1)
+            output_a, output_v, out = self.fusion_module(a, v)
+            output_a_list.append(output_a), output_v_list.append(output_v), out_list.append(out)
 
-        if "metamodal" in self.fusion:
-            return sum(output_a_list) / len(output_a_list), sum(output_v_list) / len(output_v_list), sum(disc_pred_a_list) / len(disc_pred_a_list), sum(disc_pred_v_list) / len(disc_pred_v_list), sum(out_list) / len(out_list)
-        else:
-            return sum(output_a_list) / len(output_a_list), sum(output_v_list) / len(output_v_list), sum(out_list) / len(out_list)
+        return sum(output_a_list) / len(output_a_list), sum(output_v_list) / len(output_v_list), sum(out_list) / len(out_list)
 
 
 @register_model

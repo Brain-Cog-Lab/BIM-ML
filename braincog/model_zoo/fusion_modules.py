@@ -109,8 +109,8 @@ class AVattention(nn.Module):
         attention_weights = self.sigmoid(attention_weights)  # k,bs,channel
 
         ### fuse
-        V = attention_weights[0] * x + attention_weights[1] * y
-        return V
+        x, y = attention_weights[0] * x, attention_weights[1] * y
+        return x, y
 
 class MixtureOfExperts(nn.Module):
     def __init__(self, input_dim=512, output_dim=100, num_experts=4):
@@ -155,28 +155,22 @@ class MixtureOfExperts(nn.Module):
         return singlemodal_output
 
 
-class MetamodalFusion(nn.Module):
+class AvattnlFusion(nn.Module):
     def __init__(self, input_dim=512, output_dim=100):
-        super(MetamodalFusion, self).__init__()
+        super(AvattnlFusion, self).__init__()
         # self.fc_meta_a = MixtureOfExperts(input_dim=input_dim, output_dim=input_dim, num_experts=4)
         # self.fc_meta_v = MixtureOfExperts(input_dim=input_dim, output_dim=input_dim, num_experts=4)
         self.fc_out = nn.Linear(2 * input_dim, output_dim)
-        self.discriminator_fc = nn.Linear(input_dim, 2)
-    def forward(self, a, v, alpha):
+        self.av_attn = AVattention(channel=input_dim)
+    def forward(self, a, v):
         """
-        a.shape [B, N, C]
-        v.shape [B, M, C]
+        a.shape [B, C]
+        v.shape [B, C]
         """
-        # output_a = self.fc_meta_a(a, v)
-        # output_v = self.fc_meta_v(v, a)
-        output_a, output_v = torch.mean(a, dim=1), torch.mean(v, dim=1)
-        output_a_reversed = GradientReversalFunction.apply(output_a, alpha)
-        output_v_reversed = GradientReversalFunction.apply(output_v, alpha)
-        disc_pred_a = self.discriminator_fc(output_a_reversed)
-        disc_pred_v = self.discriminator_fc(output_v_reversed)
+        output_a, output_v = self.av_attn(a, v)
         output = torch.cat((output_a, output_v), dim=1)
         output = self.fc_out(output)
-        return output_a, output_v, disc_pred_a, disc_pred_v, output
+        return output_a, output_v, output
 
 
 class OGMGE_MetamodalFusion(nn.Module):

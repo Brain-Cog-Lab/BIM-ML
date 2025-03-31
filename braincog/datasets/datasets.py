@@ -2,7 +2,7 @@ import os, warnings
 import time
 
 import tonic
-from tonic import DiskCachedDataset
+from tonic import DiskCachedDataset, RandomChoiceDiskCachedDataset
  
 import torch
 import torch.nn.functional as F
@@ -843,7 +843,7 @@ class CREMADDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         file_path, label = self.data[idx], self.targets[idx]
 
-        visual_context = PIL.Image.open(file_path).convert("RGB")
+        visual_context = PIL.Image.open(file_path).convert("RGB")  # 读取相对花时间, 0.01 or 0.007 per sample
         visual_context = self.visual_transform(visual_context)
 
         ###    -------一种读取方法, same as LinYue Guo-----
@@ -860,7 +860,8 @@ class CREMADDataset(torch.utils.data.Dataset):
         audio_file_path = file_path.replace("visual", "audio").replace(".jpg", ".wav")
 
         waveform, sample_rate = torchaudio.load(audio_file_path, normalize=True)
-        waveform = torchaudio.functional.resample(waveform, orig_freq=sample_rate, new_freq=22050)
+
+        waveform = torchaudio.functional.resample(waveform, orig_freq=sample_rate, new_freq=22050)  # 采样相对花时间, 0.02 per sample
         waveform = waveform.repeat(1, 3)[:, :22050 * 3]
         waveform = torch.clamp(waveform, -1, 1)
 
@@ -968,17 +969,14 @@ def get_CREMAD_data(batch_size, num_workers=8, same_da=False,root=DATA_DIR, **kw
 
 
 
-class KineticSoundDataset(torch.utils.data.Dataset):
-    def __init__(self, file_path, class_names, modality, train, visual_transform=None, audio_transform=None):
+class KineticSoundAudioDataset(torch.utils.data.Dataset):
+    def __init__(self, file_path, class_names, train):
         """
         Args:
             file_path (str): 数据集根目录路径
             class_names (list): 类别名称列表
             transform (callable, optional): 变换操作（如数据增强）
         """
-        self.visual_transform = visual_transform
-        self.audio_transform = audio_transform
-        self.modality = modality
 
         if train:
             self.mode = "train"
@@ -1011,10 +1009,6 @@ class KineticSoundDataset(torch.utils.data.Dataset):
                     vid_start_end = vid_start_end[:11]
                 label_id = int(item[2])  # 类别名称
 
-                # 构造完整的音频和视频路径
-                audio_path = os.path.join(self.audio_feature_path, self.class2name.get(label_id), vid_start_end + '.wav')
-                visual_path = os.path.join(self.video_feature_path, self.class2name.get(label_id), vid_start_end)
-
                 # if os.path.exists(audio_path) and os.path.exists(visual_path):
                 self.av_files.append(vid_start_end)
                 self.name2class[vid_start_end] = label_id  # 关联类别
@@ -1039,43 +1033,88 @@ class KineticSoundDataset(torch.utils.data.Dataset):
         spectrogram = stft_transforms(waveform)
         spectrogram = torch.log(torch.abs(spectrogram) + 1e-7)
 
-        audio_context = PIL.Image.fromarray(spectrogram.squeeze().numpy())  # (257, 188)
-        audio_context = self.audio_transform(audio_context)
+        return spectrogram, label
 
-        pick_num = 3
+
+class KineticSoundVisualDataset(torch.utils.data.Dataset):
+    def __init__(self, file_path, class_names, train):
+        """
+        Args:
+            file_path (str): 数据集根目录路径
+            class_names (list): 类别名称列表
+            transform (callable, optional): 变换操作（如数据增强）
+        """
+
+        if train:
+            self.mode = "train"
+        else:
+            self.mode = "test"
+        classes = []
+        self.av_files = []
+        self.name2class = {}
+        self.class2name = {}
+
+        # 数据根路径
+        self.data_root = file_path
+
+        # 训练和测试数据集路径
+        self.video_feature_path = os.path.join(self.data_root, self.mode, 'video/')
+        self.audio_feature_path = os.path.join(self.data_root, self.mode, 'audio/')
+        self.train_txt = os.path.join(self.data_root, 'my_train.txt')
+        self.test_txt = os.path.join(self.data_root, 'my_test.txt')
+
+        # 选择相应的 CSV 文件
+        csv_file = self.train_txt if self.mode == 'train' else self.test_txt
+
+        # 读取类别信息
+        self.class2name = {v: k for k, v in class_names.items()}
+        with open(csv_file) as f2:
+            csv_reader = csv.reader(f2)
+            for item in csv_reader:
+                vid_start_end = item[0]  # 视频音频标识符
+                if self.mode == "test":
+                    vid_start_end = vid_start_end[:11]
+                label_id = int(item[2])  # 类别名称
+
+                # if os.path.exists(audio_path) and os.path.exists(visual_path):
+                self.av_files.append(vid_start_end)
+                self.name2class[vid_start_end] = label_id  # 关联类别
+
+    def __len__(self):
+        return len(self.av_files)
+
+    def __getitem__(self, idx):
+
+        file_path = self.av_files[idx]
+        label = self.name2class[file_path]
+
         visual_path = os.path.join(self.video_feature_path, self.class2name[label], file_path)
-        file_num = len(os.listdir(visual_path))
-        seg = int(file_num / pick_num)
-        path1 = []
-        image = []
-        image_arr = []
-        t = [0] * pick_num
 
-        for i in range(pick_num):
-            t[i] = seg * i + 1
-            path1.append('frame_' + str(t[i]) + '.jpg')
-            try:
-                image.append(PIL.Image.open(visual_path + "/" + path1[i]).convert('RGB'))
-            except:
-                raise BlockingIOError
-            image_arr.append(self.visual_transform(image[i]))
-            image_arr[i] = image_arr[i].unsqueeze(1).float()
-            if i == 0:
-                image_n = copy.copy(image_arr[i])
-            else:
-                image_n = torch.cat((image_n, image_arr[i]), 1)
-
-        visual_context = image_n
-
-        if self.modality == "visual":
-            return visual_context, label
-        elif self.modality == "audio":
-            return audio_context, label
-        elif self.modality == "audio-visual":
-            return (audio_context, visual_context), label
+        return visual_path, label
 
 
-def get_KineticSound_data(batch_size, num_workers=8, same_da=False,root=DATA_DIR, **kwargs):
+class KineticSoundAudioVisualDataset(torch.utils.data.Dataset):
+    def __init__(self, audio_dataset, visual_dataset):
+        """
+        :param audio_dataset: AudioDataset 实例
+        :param visual_dataset: VideoDataset 实例
+        """
+        self.audio_dataset = audio_dataset
+        self.visual_dataset = visual_dataset
+
+    def __len__(self):
+        return len(self.audio_dataset)
+
+    def __getitem__(self, idx):
+        audio_data, label_a = self.audio_dataset[idx]
+        visual_data, label_v = self.visual_dataset[idx]
+        visual_data = torch.stack(visual_data, dim=0).permute(1, 0, 2, 3)
+
+        assert label_a == label_v, "音频和视频的label不匹配，检查数据排序/对齐"
+
+        return (audio_data, visual_data), label_a
+
+def get_KineticSound_data(batch_size, step, num_workers=8, same_da=False, root=DATA_DIR, **kwargs):
     """
     获取CREMAD数据
     :param batch_size: batch size
@@ -1096,6 +1135,7 @@ def get_KineticSound_data(batch_size, num_workers=8, same_da=False,root=DATA_DIR
     file_path = '/mnt/home/hexiang/kinetics_sound/'
 
     visual_train_transform = transforms.Compose([
+        lambda x: PIL.Image.fromarray(x),  # (257, 188)
         transforms.RandomResizedCrop(size),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
@@ -1104,34 +1144,45 @@ def get_KineticSound_data(batch_size, num_workers=8, same_da=False,root=DATA_DIR
 
 
     visual_test_transform = transforms.Compose([
+        lambda x: PIL.Image.fromarray(x),  # (257, 188)
         transforms.Resize((size, size)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
     audio_train_transform = transforms.Compose([
-        # transforms.Resize((size, size)),  # 将频谱图像调整到224x224; 为了能够使用collate_fn
+        lambda x: PIL.Image.fromarray(np.squeeze(x)),  # (257, 188)
         transforms.ToTensor(),
     ])
 
     audio_test_transform = transforms.Compose([
-        # transforms.Resize((size, size)),  # 将频谱图像调整到224x224
+        lambda x: PIL.Image.fromarray(np.squeeze(x)),  # (257, 188)
         transforms.ToTensor(),
     ])
 
     # 创建数据集实例，传入不同的transform
-    train_dataset = KineticSoundDataset(file_path, class_names, visual_transform=visual_train_transform, audio_transform=audio_train_transform, modality=modality, train=True)
-    test_dataset = KineticSoundDataset(file_path, class_names, visual_transform=visual_test_transform, audio_transform=audio_test_transform, modality=modality, train=False)
+    audio_train_dataset = KineticSoundAudioDataset(file_path, class_names, train=True)
+    audio_train_dataset = DiskCachedDataset(audio_train_dataset, cache_path=os.path.join("/home/hexiang/", 'KineticSound/audio/train_cache_{}'.format(step)), transform=audio_train_transform, num_copies=1)
+    audio_test_dataset = KineticSoundAudioDataset(file_path, class_names, train=False)
+    audio_test_dataset = DiskCachedDataset(audio_test_dataset, cache_path=os.path.join("/home/hexiang/", 'KineticSound/audio/test_cache_{}'.format(step)), transform=audio_test_transform, num_copies=1)
+
+    visual_train_dataset = KineticSoundVisualDataset(file_path, class_names, train=True)
+    visual_train_dataset = RandomChoiceDiskCachedDataset(visual_train_dataset, cache_path=os.path.join("/home/hexiang/", 'KineticSound/visual/train_cache_{}'.format(step)), transform=visual_train_transform, num_copies=1)
+    visual_test_dataset = KineticSoundVisualDataset(file_path, class_names, train=False)
+    visual_test_dataset = RandomChoiceDiskCachedDataset(visual_test_dataset, cache_path=os.path.join("/home/hexiang/", 'KineticSound/visual/test_cache_{}'.format(step)), transform=visual_test_transform, num_copies=1)
+
+    train_dataset = KineticSoundAudioVisualDataset(audio_train_dataset, visual_train_dataset)
+    test_dataset = KineticSoundAudioVisualDataset(audio_test_dataset, visual_test_dataset)
 
     # 使用SubsetRandomSampler来创建训练和测试的DataLoader
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True,
-        pin_memory=True, drop_last=True, num_workers=32
+        pin_memory=True, drop_last=True, num_workers=16
     )
 
     test_loader = torch.utils.data.DataLoader(
         test_dataset, batch_size=batch_size, shuffle=False,
-        pin_memory=True, drop_last=False, num_workers=32
+        pin_memory=True, drop_last=False, num_workers=16
     )
 
     return train_loader, test_loader, None, None
