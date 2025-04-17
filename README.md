@@ -1,6 +1,5 @@
 <div align="center">
-
-<h2 class="papername"> Incorporating brain-inspired mechanisms for multisensory learning in artificial intelligence </h2>
+<h2 class="papername"> Incorporating brain-inspired mechanisms for multimodal learning in artificial intelligence </h2>
 <div>
 <div>
     <a href="https://scholar.google.com/citations?user=Em5FqXYAAAAJ" target="_blank">Xiang He*</a>,
@@ -15,9 +14,7 @@ Institute of Automation, Chinese Academy of Sciences, Beijing<br>
 *Equal contribution
 †Corresponding author
 
-\[[arxiv]()\] \[[paper]()\] \[[code](https://github.com/Brain-Cog-Lab/BIM-ML)\]
-
-[![Hits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2FBrain-Cog-Lab%2FBIM-ML&count_bg=%2379C83D&title_bg=%23555555&icon=&icon_color=%23E7E7E7&title=hits&edge_flat=false)](https://hits.seeyoufarm.com)
+\[[arxiv]()\] \[[paper]()\] \[[code](https://github.com/Brain-Cog-Lab/BIM-for-MM)\]
 
 </div>
 <br>
