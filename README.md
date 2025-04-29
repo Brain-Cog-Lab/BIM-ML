@@ -9,7 +9,6 @@
     <a href="https://ieeexplore.ieee.org/author/37085719247" target="_blank">Xin Yang†</a>,
     <a href="https://scholar.google.com/citations?user=Rl-YqPEAAAAJ" target="_blank">Yi Zeng†</a>
 </div>
-
 Institute of Automation, Chinese Academy of Sciences, Beijing<br>
 *Equal contribution
 †Corresponding author
@@ -26,41 +25,34 @@ If you find this work useful for your research, please kindly cite our paper and
 
 
 
+## Usage
 
-
-## Datasets
-
-- KineticsSound:
-
-  We Follow We obtained the KineticsSound dataset using the method in [bmmal](https://github.com/MengShen0709/bmmal/tree/main) and thank them for their contribution! This will get a total of 31 classes, 14772 data for training and 2594 data for testing. You can download our zipped dataset [here]().
-
-  1. Download dataset following [Kinetics Datasets Downloader](https://github.com/cvdfoundation/kinetics-dataset)
-  2. Run **kinetics_convert_avi.py** to convert mp4 files into avi files.
-  3. Run **kinetics_arrange_by_class.py** to organize the files.
-  4. Run **extract_wav_and_frames.py** to extract wav files and 10 frame images as jpg.
-  5. Run **ks_find.py** to filter out disqualified data.
-  6. The final dataset file structure will be like:
-
+```bash
++--- Audio Visual Classification 
++--- Audio Visual Continual Learning
+\--- Audio Visual Question Answering
 ```
-├── kinetics_sound
-    ├── my_train.txt
-    ├── my_test.txt
-    ├── train
-        ├── video
-            ├── label_name
-                ├── vid_start_end
-                    ├── frame_0.jpg
-                    ├── frame_1.jpg
-                    ├── ...
-                    ├── frame_9.jpg
-        ├── audio
-            ├── label_name
-                ├── vid_start_end.wav
-                ├── ...
-    ├── test
-        ├── ...
+
+Three folders provide three tasks each. They contain detailed **run scripts for each task, drawing programs, and the way to download the corresponding dataset.** 
+
+We also upload the weights of the trained model, as well as the log files from the training process here to ensure reproduction of the results in the paper. You can find them [here]().
+
+
+
+## Citation
+
+If our paper is useful for your research, please consider citing it:
+
+```bash
+bibtex here
 ```
 
 
 
-In addition, [DMRNet](https://github.com/shicaiwei123/ECCV2024-DMRNet/tree/main) provides a version of the 33 categories, which can also be used as a reference, and their contribution is appreciated! 
+
+
+## Acknowledgements
+
+The code for each of the three tasks refers to [OGM_GE](https://github.com/GeWu-Lab/OGM-GE_CVPR2022), [AV-CIL_ICCV2023](https://github.com/weiguoPian/AV-CIL_ICCV2023), [MUSIC_AVQA](https://github.com/GeWu-Lab/MUSIC-AVQA):, thanks for their excellent work!
+
+If you are confused about using it or have other feedback and comments, please feel free to contact us via hexiang2021@ia.ac.cn. Have a good day!
