@@ -25,6 +25,14 @@ If you find this work useful for your research, please kindly cite our paper and
 
 
 
+## Method
+
+We propose an inverse effectiveness driven multimodal fusion (IEMF) method, which dynamically adjusts the update dynamics of the multimodal fusion module based on the relationship between the strength of individual modality cues and the strength of the fused multimodal signal.
+
+![](./figs/method.jpg)
+
+
+
 ## Usage
 
 ```bash
