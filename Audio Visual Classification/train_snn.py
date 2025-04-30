@@ -1005,12 +1005,12 @@ def train_epoch(
             else:
                 pass
 
-            # if args.inverse_starts <= epoch <= args.inverse_ends:
-            #     for name, parms in model.named_parameters():
-            #         layer = str(name).split('.')[0]
-            #         if 'fusion' in layer and str(name).split('.')[1] == "fc_out":
-            #             if args.inverse is True:
-            #                 parms.grad = parms.grad * coeff_av + torch.zeros_like(parms.grad).normal_(0, parms.grad.std().item() + 1e-8)
+            if args.inverse_starts <= epoch <= args.inverse_ends:
+                for name, parms in model.named_parameters():
+                    layer = str(name).split('.')[0]
+                    if 'fusion' in layer and str(name).split('.')[1] == "fc_out":
+                        if args.inverse is True:
+                            parms.grad = parms.grad * coeff_av + torch.zeros_like(parms.grad).normal_(0, parms.grad.std().item() + 1e-8)
 
             optimizer.step()
 
