@@ -43,6 +43,7 @@ from einops import rearrange, repeat
 from copy import deepcopy
 from itertools import cycle
 from tqdm import tqdm
+from thop import profile
 
 from min_norm_solvers import MinNormSolver
 
@@ -364,6 +365,9 @@ parser.add_argument('--snrModality', type=str, help='which Modality')
 # for finetuning only
 parser.add_argument('--load-avmodel', action='store_true')
 
+# for computing cost
+parser.add_argument('--compute-cost', action='store_true')
+
 try:
     from apex import amp
     from apex.parallel import DistributedDataParallel as ApexDDP
@@ -590,6 +594,12 @@ def main(model, loader_train, loader_eval, output_dir):
         #     load_checkpoint(model, args.eval_checkpoint, args.model_ema)
         model.load_state_dict(torch.load(args.eval_checkpoint)['state_dict'], strict=True)
         model.eval()
+        if args.compute_cost:
+            flops, params = profile(model, inputs=([torch.ones([1, 1, 1, 257, 188]).cuda(), torch.ones([1, 1, 3, 3, 224, 224]).cuda()],), verbose=False)
+            _logger.info('flops = %fG', flops / 1e9)
+            _logger.info('param size = %fM', params / 1e6)
+            return
+
         val_metrics = validate(start_epoch, model, loader_eval, validate_loss_fn, args,
                                visualize=args.visualize, spike_rate=args.spike_rate,
                                tsne=args.tsne, conf_mat=args.conf_mat, summary_writer=summary_writer)

@@ -130,6 +130,9 @@ class AVClassifier(BaseModule):
                 a = torch.flatten(a, 1)
                 v = torch.flatten(v, 1)
                 output_a, output_v, out = self.fusion_module(a, v)
+                # for test flops only
+                # output_a = self.audio_fc(output_a)
+                # output_v = self.visual_fc(output_v)
                 output_a_list.append(output_a), output_v_list.append(output_v), out_list.append(out)
 
             return sum(output_a_list) / len(output_a_list), sum(output_v_list) / len(output_v_list), sum(out_list) / len(out_list)
