@@ -13,7 +13,7 @@ Institute of Automation, Chinese Academy of Sciences, Beijing<br>
 *Equal contribution
 †Corresponding author
 
-\[[arxiv]()\] \[[paper]()\] \[[code](https://github.com/Brain-Cog-Lab/BIM-for-MM)\]
+\[[arxiv](https://arxiv.org/abs/2505.10176)\] \[[paper]()\] \[[code](https://github.com/Brain-Cog-Lab/IEMF)\]
 
 </div>
 <br>
@@ -52,7 +52,15 @@ We also upload the weights of the trained model, as well as the log files from t
 If our paper is useful for your research, please consider citing it:
 
 ```bash
-bibtex here
+@misc{he2025incorporatingbraininspiredmechanismsmultimodal,
+      title={Incorporating brain-inspired mechanisms for multimodal learning in artificial intelligence}, 
+      author={Xiang He and Dongcheng Zhao and Yang Li and Qingqun Kong and Xin Yang and Yi Zeng},
+      year={2025},
+      eprint={2505.10176},
+      archivePrefix={arXiv},
+      primaryClass={cs.NE},
+      url={https://arxiv.org/abs/2505.10176}, 
+}
 ```
 
 
