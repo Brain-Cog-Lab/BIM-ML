@@ -24,7 +24,7 @@ CREMA-D datasets：[CREMA-D](https://github.com/CheyneyComputerScience/CREMA-D)
 
 - Kinetics-Sounds:
 
-  We Follow We obtained the KineticsSound dataset using the method in [bmmal](https://github.com/MengShen0709/bmmal/tree/main) and thank them for their contribution! This will get a total of 31 classes, 14772 data for training and 2594 data for testing. You can download our zipped dataset as mentioned [here](../README.md#L51-L52).
+  We Follow We obtained the KineticsSound dataset using the method in [bmmal](https://github.com/MengShen0709/bmmal/tree/main) and thank them for their contribution! This will get a total of 31 classes, 14772 data for training and 2594 data for testing. You can download our zipped dataset as mentioned [here](../README.md#L51).
 
   1. Download dataset following [Kinetics Datasets Downloader](https://github.com/cvdfoundation/kinetics-dataset)
   2. Run **kinetics_convert_avi.py** to convert mp4 files into avi files.
