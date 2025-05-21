@@ -43,9 +43,13 @@ We propose an inverse effectiveness driven multimodal fusion (IEMF) method, whic
 
 Three folders provide three tasks each. They contain detailed **run scripts for each task, drawing programs, and the way to download the corresponding dataset.** 
 
-We also upload the weights of the trained model, as well as the log files from the training process here to ensure reproduction of the results in the paper. You can find them [here]().
+## Well-trained model
+We also upload the weights of the trained model, as well as the log files from the training process here to ensure reproduction of the results in the paper. You can find them at [https://huggingface.co/xianghe/IEMF/tree/main](https://huggingface.co/xianghe/IEMF/tree/main).
 
-
+## Dataset Download
+You can find how to download the dataset under the folder corresponding to each task. 
+In particular, due to the processing complexity of the Kinetics-Sounds dataset, you can download our packaged raw video-audio dataset at [here](https://pan.baidu.com/s/1NHmpyhpPaXJVgtwFPkKHcw) (extraction code:  bauh).
+In addition to the original dataset, we also provide processed data in HDF5 format ready for network model input, which you can access [here](https://pan.baidu.com/s/1v28Pt9HUKHUv8JCagdGuTQ) (extraction code: jzbg).
 
 ## Citation
 
