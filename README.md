@@ -5,8 +5,8 @@
     <a href="https://scholar.google.com/citations?user=Em5FqXYAAAAJ" target="_blank">Xiang He*</a>,
     <a href="https://scholar.google.com/citations?user=2E9Drq8AAAAJ" target="_blank">Dongcheng Zhao*</a>,
     <a href="https://scholar.google.com/citations?user=3QpRLTgAAAAJ" target="_blank">Yang Li</a>,
-    <a href="https://scholar.google.com/citations?user=Sv-WdBkAAAAJ" target="_blank">Qingqun Kong†</a>,
-    <a href="https://ieeexplore.ieee.org/author/37085719247" target="_blank">Xin Yang†</a>,
+    <a href="https://ieeexplore.ieee.org/author/37085719247" target="_blank">Qingqun Kong†</a>,
+    <a href="https://ieeexplore.ieee.org/author/37401423300" target="_blank">Xin Yang†</a>,
     <a href="https://scholar.google.com/citations?user=Rl-YqPEAAAAJ" target="_blank">Yi Zeng†</a>
 </div>
 Institute of Automation, Chinese Academy of Sciences, Beijing<br>
